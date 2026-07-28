@@ -1,0 +1,12 @@
+.git
+.gitignore
+.dockerignore
+
+# Stale local build artifacts (rebuilt inside the image)
+citadel
+*.db
+
+# Not needed for the build
+Dockerfile
+README.md
+test
