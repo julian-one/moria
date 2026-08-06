@@ -2,66 +2,69 @@ package user
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
+	"time"
 
-	sq "github.com/Masterminds/squirrel"
 	"github.com/jmoiron/sqlx"
 )
 
-func Update(
-	ctx context.Context,
-	db sqlx.ExtContext,
-	userID string,
-	username *string,
-	role *string,
-) (*User, error) {
-	query := sq.Update("users").
-		Set("updated_at", sq.Expr("datetime('now')")).
-		Where(sq.Eq{"user_id": userID})
-
-	if username != nil {
-		query = query.Set("username", *username)
+func UpdateUsername(ctx context.Context, db *sqlx.DB, userID, username string) (*User, error) {
+	var u User
+	err := db.GetContext(ctx, &u,
+		`UPDATE users SET username = $1, updated_at = $2
+		 WHERE user_id = $3 RETURNING *`,
+		username, time.Now().UTC(), userID,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
 	}
-	if role != nil {
-		query = query.Set("role", *role)
+	if terr := taken(err); terr != nil {
+		return nil, terr
 	}
-
-	sql, args, err := query.
-		Suffix("RETURNING *").
-		PlaceholderFormat(sq.Question).
-		ToSql()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to update username: %w", err)
 	}
-
-	var user User
-	err = sqlx.GetContext(ctx, db, &user, sql, args...)
-	if err != nil {
-		return nil, err
-	}
-	return &user, nil
+	return &u, nil
 }
 
-func UpdatePassword(
-	ctx context.Context,
-	db sqlx.ExtContext,
-	userID string,
-	newPassword string,
-) error {
-	h, s, err := Hash(newPassword, nil)
+func UpdateRole(ctx context.Context, db *sqlx.DB, userID string, role Role) error {
+	res, err := db.ExecContext(ctx,
+		`UPDATE users SET role = $1, updated_at = $2 WHERE user_id = $3`,
+		role, time.Now().UTC(), userID)
 	if err != nil {
-		return fmt.Errorf("failed to hash new password: %w", err)
+		return fmt.Errorf("failed to update role: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to update role: %w", err)
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func UpdatePassword(ctx context.Context, db *sqlx.DB, userID, password string) error {
+	h, salt, err := hash(password, nil)
+	if err != nil {
+		return err
 	}
 
-	_, err = db.ExecContext(
-		ctx,
-		`UPDATE users SET password_hash = ?, salt = ?, updated_at = datetime('now') WHERE user_id = ?`,
-		h,
-		s,
-		userID,
-	)
+	res, err := db.ExecContext(ctx,
+		`UPDATE users SET password_hash = $1, salt = $2, updated_at = $3
+		 WHERE user_id = $4`,
+		h, salt, time.Now().UTC(), userID)
 	if err != nil {
 		return fmt.Errorf("failed to update password: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to update password: %w", err)
+	}
+	if n == 0 {
+		return ErrNotFound
 	}
 	return nil
 }

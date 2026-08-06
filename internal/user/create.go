@@ -8,31 +8,28 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
-type CreateRequest struct {
-	Username string `json:"username"`
-	Email    string `json:"email"`
-	Password string `json:"password"`
-}
-
-func Create(ctx context.Context, db sqlx.ExecerContext, request CreateRequest) (string, error) {
-	h, s, err := Hash(request.Password, nil)
+func Create(
+	ctx context.Context,
+	db *sqlx.DB,
+	username, email, password string,
+	role Role,
+) (*User, error) {
+	hash, salt, err := hash(password, nil)
 	if err != nil {
-		return "", fmt.Errorf("failed to hash password: %w", err)
+		return nil, err
 	}
 
-	uid := uuid.New().String()
-	_, err = db.ExecContext(
-		ctx,
-		`INSERT INTO users (user_id, username, email, password_hash, salt) 
-			VALUES (?, ?, ?, ?, ?)`,
-		uid,
-		request.Username,
-		request.Email,
-		h,
-		s,
+	var u User
+	err = db.GetContext(ctx, &u,
+		`INSERT INTO users (user_id, username, email, password_hash, salt, role)
+		 VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+		uuid.New().String(), username, email, hash, salt, role,
 	)
-	if err != nil {
-		return "", fmt.Errorf("failed to create user: %w", err)
+	if terr := taken(err); terr != nil {
+		return nil, terr
 	}
-	return uid, nil
+	if err != nil {
+		return nil, fmt.Errorf("failed to create user: %w", err)
+	}
+	return &u, nil
 }

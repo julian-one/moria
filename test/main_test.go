@@ -1,66 +1,71 @@
 package test
 
 import (
+	"bytes"
 	"context"
-	"flag"
-	"io"
+	"log"
 	"log/slog"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
+	"sync"
 	"testing"
 
-	"moria/route"
-
 	"github.com/jmoiron/sqlx"
-	_ "github.com/mattn/go-sqlite3"
+
+	"moria/internal/database"
+	"moria/route"
+	"moria/test/seeding"
 )
 
 var (
-	server         *httptest.Server
-	internalServer *httptest.Server
-	db             *sqlx.DB
-	td             *TestData
+	srv  *httptest.Server
+	db   *sqlx.DB
+	logs lockedBuffer
 )
 
+// The server logs from request goroutines after the response is already on
+// the wire, so the capture must be safe for concurrent writes.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 func TestMain(m *testing.M) {
-	flag.Parse()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
 
-	ctx := context.Background()
+	boot := log.New(os.Stderr, "", log.LstdFlags)
 
-	db = sqlx.MustConnect("sqlite3", ":memory:?_foreign_keys=on")
-
-	schemaSQL, err := os.ReadFile(filepath.Join("..", "schema", "model.sql"))
+	dbURL, drop, err := createTestDatabase()
 	if err != nil {
-		panic(err)
+		boot.Fatal(err)
 	}
-	db.MustExec(string(schemaSQL))
-
-	// Only log if the test is run with the -v flag
-	logOutput := io.Discard
-	if testing.Verbose() {
-		logOutput = os.Stdout
+	db, err = database.New(context.Background(), dbURL)
+	if err != nil {
+		boot.Fatal(err)
 	}
-	logger := slog.New(slog.NewJSONHandler(logOutput, nil))
-
-	// Initialize both listeners with the test database and logger
-	config := route.Config{
-		DB:     db,
-		Logger: logger,
+	if err := seeding.Defaults(db); err != nil {
+		boot.Fatal(err)
 	}
-	server = httptest.NewServer(route.Initialize(ctx, config))
-	internalServer = httptest.NewServer(route.InitializeInternal(ctx, config))
+	srv = httptest.NewServer(route.Initialize(route.Config{DB: db}))
 
-	// Seed the database with test data
-	td = Seed(db)
-
-	// Run the tests
 	code := m.Run()
 
-	// NOTE: defer doesn't work here because os.Exit will terminate the program immediately
-	server.Close()
-	internalServer.Close()
+	srv.Close()
 	db.Close()
-
+	if err := drop(); err != nil {
+		boot.Print(err)
+	}
 	os.Exit(code)
 }

@@ -2,40 +2,22 @@ package route
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 
+	"github.com/jmoiron/sqlx"
+
 	"moria/internal/session"
 	"moria/internal/user"
-
-	"github.com/jmoiron/sqlx"
 )
 
-func ListUsers(logger *slog.Logger, db *sqlx.DB) http.HandlerFunc {
+func ListUsers(db *sqlx.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
-
-		opts, err := user.ParseListOptions(r)
+		users, err := user.List(ctx, db)
 		if err != nil {
-			logger.Warn("failed to parse user list options", "error", err)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request"})
-			return
-		}
-
-		users, err := user.List(ctx, db, opts)
-		if err != nil {
-			logger.Error("failed to list users", "error", err)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]string{"error": "Failed to list users"})
-			return
-		}
-
-		total, err := user.Count(ctx, db, opts)
-		if err != nil {
-			logger.Error("failed to count users", "error", err)
+			slog.Error("failed to list users", "error", err)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(map[string]string{"error": "Failed to list users"})
@@ -47,18 +29,87 @@ func ListUsers(logger *slog.Logger, db *sqlx.DB) http.HandlerFunc {
 		json.NewEncoder(w).Encode(struct {
 			Items []user.User `json:"items"`
 			Total int         `json:"total"`
-		}{users, total})
+		}{
+			users,
+			len(users),
+		})
 	}
 }
 
-func GetUser(logger *slog.Logger, db *sqlx.DB) http.HandlerFunc {
+func CreateUser(db *sqlx.DB) http.HandlerFunc {
+	type Request struct {
+		Username string `json:"username"`
+		Email    string `json:"email"`
+		Password string `json:"password"`
+		Role     string `json:"role"`
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req Request
+		if json.NewDecoder(r.Body).Decode(&req) != nil ||
+			req.Username == "" || req.Email == "" || req.Password == "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request body"})
+			return
+		}
+		role := user.RoleUser
+		if req.Role != "" {
+			var err error
+			if role, err = user.ParseRole(req.Role); err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(map[string]string{"error": "Invalid role provided"})
+				return
+			}
+		}
+
+		u, err := user.Create(
+			r.Context(),
+			db,
+			req.Username,
+			req.Email,
+			req.Password,
+			role,
+		)
+		if errors.Is(err, user.ErrUsernameTaken) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Username is already taken"})
+			return
+		}
+		if errors.Is(err, user.ErrEmailTaken) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Email is already taken"})
+			return
+		}
+		if err != nil {
+			slog.Error("failed to create user", "error", err)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Failed to create user"})
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(u)
+	}
+}
+
+func GetUser(db *sqlx.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
-
-		userID := r.PathValue("id")
-		u, err := user.ByID(ctx, db, userID)
+		id := r.PathValue("id")
+		u, err := user.ByID(ctx, db, id)
+		if errors.Is(err, user.ErrNotFound) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]string{"error": "User not found"})
+			return
+		}
 		if err != nil {
-			logger.Error("failed to get user", "error", err)
+			slog.Error("failed to get user", "error", err)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(map[string]string{"error": "Failed to get user"})
@@ -71,60 +122,47 @@ func GetUser(logger *slog.Logger, db *sqlx.DB) http.HandlerFunc {
 	}
 }
 
-func UpdateUser(logger *slog.Logger, db *sqlx.DB) http.HandlerFunc {
+func UpdateUser(db *sqlx.DB) http.HandlerFunc {
 	type Request struct {
-		Username *string `json:"username,omitempty"`
+		Username string `json:"username"`
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req Request
-		if json.NewDecoder(r.Body).Decode(&req) != nil {
+		if json.NewDecoder(r.Body).Decode(&req) != nil || req.Username == "" {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
 			json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request body"})
 			return
 		}
 
-		ctx := r.Context()
-		taken, err := user.IsUsernameTaken(ctx, db, *req.Username)
-		if err != nil {
+		id := r.PathValue("id")
+		requester := session.RequesterFrom(r.Context())
+		if requester.User.UserID != id && requester.User.Role != user.RoleAdmin {
 			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]string{"error": "Failed to check username"})
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).
+				Encode(map[string]string{"error": "You can only update your own username"})
 			return
 		}
-		if taken {
+
+		u, err := user.UpdateUsername(r.Context(), db, id, req.Username)
+		if errors.Is(err, user.ErrUsernameTaken) {
 			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadRequest)
+			w.WriteHeader(http.StatusConflict)
 			json.NewEncoder(w).Encode(map[string]string{"error": "Username is already taken"})
 			return
 		}
-
-		s, ok := ctx.Value(session.ContextKey).(*session.Session)
-		if !ok || s == nil {
+		if errors.Is(err, user.ErrNotFound) {
 			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			json.NewEncoder(w).Encode(map[string]string{"error": "Authentication required"})
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]string{"error": "User not found"})
 			return
 		}
-
-		id := r.PathValue("id")
-		if s.User != id {
-			var u *user.User
-			u, err = user.ByID(ctx, db, s.User)
-			if err != nil || u.Role != user.RoleAdmin {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusForbidden)
-				json.NewEncoder(w).
-					Encode(map[string]string{"error": "You can only update your own username"})
-				return
-			}
-		}
-		u, err := user.Update(ctx, db, id, req.Username, nil)
 		if err != nil {
-			logger.Error("failed to update user", "error", err)
+			slog.Error("failed to update user", "error", err)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]string{"error": "Failed to update user role"})
+			json.NewEncoder(w).Encode(map[string]string{"error": "Failed to update user"})
 			return
 		}
 
@@ -134,43 +172,7 @@ func UpdateUser(logger *slog.Logger, db *sqlx.DB) http.HandlerFunc {
 	}
 }
 
-func UpdateUserRole(logger *slog.Logger, db *sqlx.DB) http.HandlerFunc {
-	type Request struct {
-		Role string `json:"role"`
-	}
-	return func(w http.ResponseWriter, r *http.Request) {
-		var req Request
-		if json.NewDecoder(r.Body).Decode(&req) != nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request body"})
-			return
-		}
-
-		if !user.Role(req.Role).Valid() {
-			logger.Warn("invalid role provided", "role", req.Role)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]string{"error": "Invalid role provided"})
-			return
-		}
-
-		ctx := r.Context()
-		id := r.PathValue("id")
-		_, err := user.Update(ctx, db, id, nil, &req.Role)
-		if err != nil {
-			logger.Error("failed to update user role", "error", err)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]string{"error": "Failed to update user role"})
-			return
-		}
-
-		w.WriteHeader(http.StatusNoContent)
-	}
-}
-
-func UpdatePassword(logger *slog.Logger, db *sqlx.DB) http.HandlerFunc {
+func UpdatePassword(db *sqlx.DB) http.HandlerFunc {
 	type Request struct {
 		NewPassword string `json:"new_password"`
 	}
@@ -183,17 +185,9 @@ func UpdatePassword(logger *slog.Logger, db *sqlx.DB) http.HandlerFunc {
 			return
 		}
 
-		ctx := r.Context()
-		s, ok := ctx.Value(session.ContextKey).(*session.Session)
-		if !ok || s == nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			json.NewEncoder(w).Encode(map[string]string{"error": "Authentication required"})
-			return
-		}
-
 		id := r.PathValue("id")
-		if s.User != id {
+		requester := session.RequesterFrom(r.Context())
+		if requester.User.UserID != id {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusForbidden)
 			json.NewEncoder(w).
@@ -201,11 +195,57 @@ func UpdatePassword(logger *slog.Logger, db *sqlx.DB) http.HandlerFunc {
 			return
 		}
 
-		if err := user.UpdatePassword(ctx, db, id, req.NewPassword); err != nil {
-			logger.Error("failed to update password", "error", err)
+		err := user.UpdatePassword(r.Context(), db, id, req.NewPassword)
+		if errors.Is(err, user.ErrNotFound) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]string{"error": "User not found"})
+			return
+		}
+		if err != nil {
+			slog.Error("failed to update password", "error", err)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(map[string]string{"error": "Failed to update password"})
+			return
+		}
+
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func UpdateUserRole(db *sqlx.DB) http.HandlerFunc {
+	type Request struct {
+		Role string `json:"role"`
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req Request
+		if json.NewDecoder(r.Body).Decode(&req) != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request body"})
+			return
+		}
+		role, err := user.ParseRole(req.Role)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Invalid role provided"})
+			return
+		}
+
+		err = user.UpdateRole(r.Context(), db, r.PathValue("id"), role)
+		if errors.Is(err, user.ErrNotFound) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]string{"error": "User not found"})
+			return
+		}
+		if err != nil {
+			slog.Error("failed to update role", "error", err)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Failed to update role"})
 			return
 		}
 

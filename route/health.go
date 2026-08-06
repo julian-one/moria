@@ -12,7 +12,7 @@ func Health() http.HandlerFunc {
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]string{
 			"status": "ok",
-			"time":   time.Now().Format(time.RFC3339),
+			"time":   time.Now().UTC().Format(time.RFC3339),
 		})
 	}
 }

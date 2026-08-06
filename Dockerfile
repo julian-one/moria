@@ -1,20 +1,27 @@
-FROM golang:1.26-alpine
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
 
-RUN apk add --no-cache gcc musl-dev sqlite-dev
+ARG TARGETOS TARGETARCH
 
 WORKDIR /app
 
 COPY go.mod go.sum ./
 
 RUN --mount=type=cache,target=/go/pkg/mod \
-    go mod download
+  go mod download
 
 COPY . .
 
 RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=1 go build -o moria .
+  --mount=type=cache,target=/root/.cache/go-build \
+  CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -o /moria .
 
-EXPOSE 8081 8082
+FROM gcr.io/distroless/static-debian12:nonroot
 
-CMD ["./moria", "serve"]
+WORKDIR /app
+
+COPY --from=build /moria /usr/local/bin/moria
+
+EXPOSE 8081
+
+ENTRYPOINT ["/usr/local/bin/moria"]
+CMD ["serve"]

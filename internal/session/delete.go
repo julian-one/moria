@@ -3,24 +3,31 @@ package session
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jmoiron/sqlx"
 )
 
-// Delete removes a specific session (logout).
-func Delete(ctx context.Context, db sqlx.ExecerContext, sessionID string) error {
-	_, err := db.ExecContext(ctx, `DELETE FROM sessions WHERE session_id = ?`, sessionID)
-	if err != nil {
+func Delete(ctx context.Context, db *sqlx.DB, id ID) error {
+	if _, err := db.ExecContext(ctx,
+		`DELETE FROM sessions WHERE session_id = $1`, id); err != nil {
 		return fmt.Errorf("failed to delete session: %w", err)
 	}
 	return nil
 }
 
-// DeleteAll removes all sessions for a user (logout everywhere).
-func DeleteAll(ctx context.Context, db sqlx.ExecerContext, userID string) error {
-	_, err := db.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ?`, userID)
-	if err != nil {
+func DeleteAll(ctx context.Context, db *sqlx.DB, userID string) error {
+	if _, err := db.ExecContext(ctx,
+		`DELETE FROM sessions WHERE user_id = $1`, userID); err != nil {
 		return fmt.Errorf("failed to delete user sessions: %w", err)
+	}
+	return nil
+}
+
+func DeleteExpired(ctx context.Context, db *sqlx.DB) error {
+	if _, err := db.ExecContext(ctx,
+		`DELETE FROM sessions WHERE expires_at < $1`, time.Now().UTC()); err != nil {
+		return fmt.Errorf("failed to delete expired sessions: %w", err)
 	}
 	return nil
 }

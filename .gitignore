@@ -21,10 +21,12 @@ go.work.sum
 
 # env file
 .env
-config*.json
+.moria.json
 
 # sqlite
 *.db
+*.db-wal
+*.db-shm
 
 # curl
 curl.*
@@ -32,5 +34,3 @@ curl.*
 # scratch
 scratch*.*
 
-# testing
-cmd/seed.go

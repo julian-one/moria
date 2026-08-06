@@ -1,14 +1,36 @@
 package session
 
-import "time"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"time"
+
+	"moria/internal/database"
+)
+
+var ErrNotFound = errors.New("session not found")
 
 type contextKey string
 
-const ContextKey contextKey = "session"
+const (
+	requesterKey contextKey    = "requester"
+	CookieName   string        = "TOKEN"
+	Duration     time.Duration = 24 * time.Hour
+)
+
+type Token string
+
+type ID string
+
+func (t Token) ID() ID {
+	sum := sha256.Sum256([]byte(t))
+	return ID(hex.EncodeToString(sum[:]))
+}
 
 type Session struct {
-	SessionID string    `json:"session_id" db:"session_id"`
-	User      string    `json:"user_id"    db:"user_id"`
-	ExpiresAt time.Time `json:"expires_at" db:"expires_at"`
-	CreatedAt time.Time `json:"created_at" db:"created_at"`
+	SessionID ID               `db:"session_id" json:"session_id"`
+	UserID    string           `db:"user_id"    json:"user_id"`
+	ExpiresAt database.UTCTime `db:"expires_at" json:"expires_at"`
+	CreatedAt database.UTCTime `db:"created_at" json:"created_at"`
 }
