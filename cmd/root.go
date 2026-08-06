@@ -1,105 +1,48 @@
 package cmd
 
 import (
-	"errors"
-	"fmt"
 	"log/slog"
 	"os"
-	"runtime/debug"
 	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
 
-var cfgFile string
-
-var rootCmd = &cobra.Command{
-	Use:     "moria",
-	Version: version(),
-	Short:   "Moria - The authentication service",
-	Long: `Moria is the standalone authentication service.
-		It owns users and sessions, and serves registration, login,
-		password recovery, and session validation.`,
-	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		return initializeConfig()
-	},
+var root = &cobra.Command{
+	Use:   "moria",
+	Short: "speak, friend, and enter",
 }
 
 func Execute() {
-	err := rootCmd.Execute()
+	err := root.Execute()
 	if err != nil {
 		os.Exit(1)
 	}
 }
 
-// version prefers the module version stamped by the toolchain, then the VCS
-// revision recorded at build time.
-func version() string {
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
-		return "devel"
-	}
-	if v := info.Main.Version; v != "" && v != "(devel)" {
-		return v
-	}
-	var revision, dirty string
-	for _, s := range info.Settings {
-		switch s.Key {
-		case "vcs.revision":
-			revision = s.Value
-		case "vcs.modified":
-			if s.Value == "true" {
-				dirty = "-dirty"
-			}
-		}
-	}
-	if revision != "" {
-		return revision[:min(12, len(revision))] + dirty
-	}
-	return "devel"
-}
-
 func init() {
-	rootCmd.PersistentFlags().
-		StringVar(&cfgFile, "config", "", "config file (default is ./config.json)")
+	var config string
+	root.PersistentFlags().
+		StringVar(&config, "config", "", "config file (default is config.json)")
 
-	if err := viper.BindEnv("resend.api_key", "RESEND_API_KEY"); err != nil {
-		slog.Error("failed to bind env", "key", "resend.api_key", "error", err)
-	}
-	if err := viper.BindEnv("hmac.signing_key", "HMAC_SIGNING_KEY"); err != nil {
-		slog.Error("failed to bind env", "key", "hmac.signing_key", "error", err)
-	}
-}
-
-func initializeConfig() error {
-	viper.SetDefault("server.port", "8081")
-	viper.SetDefault("server.base_url", "https://julian-one.com")
-	viper.SetDefault("database.path", "./moria.db")
-	viper.SetDefault("database.schema", "./schema/model.sql")
-	viper.SetDefault("resend.from_email", "noreply@contact.julian-one.com")
-	viper.SetDefault("resend.api_key", "")
-	viper.SetDefault("hmac.signing_key", "")
-
-	viper.SetEnvPrefix("MORIA")
-	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_", "-", "_"))
-	viper.AutomaticEnv()
-
-	if cfgFile != "" {
-		viper.SetConfigFile(cfgFile)
-	} else {
-		viper.SetConfigName("config")
-		viper.SetConfigType("json")
-		viper.AddConfigPath(".")
-	}
-
-	if err := viper.ReadInConfig(); err != nil {
-		if _, ok := errors.AsType[viper.ConfigFileNotFoundError](err); ok {
-			slog.Warn("no config file found, using defaults and environment")
+	// OnInitialize runs after flag parsing, so --config is visible here.
+	cobra.OnInitialize(func() {
+		if config != "" {
+			viper.SetConfigFile(config)
 		} else {
-			return fmt.Errorf("reading config file: %w", err)
+			viper.AddConfigPath(".")
+			viper.SetConfigType("json")
+			viper.SetConfigName("config")
 		}
-	}
 
-	return nil
+		viper.SetEnvPrefix("MORIA")
+		viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
+		viper.AutomaticEnv()
+		if err := viper.ReadInConfig(); err == nil {
+			slog.Info("using config file", "file", viper.ConfigFileUsed())
+		}
+	})
+
+	root.AddCommand(serve)
 }

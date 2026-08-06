@@ -1,12 +1,10 @@
-# .git stays in the context so the build can stamp the VCS revision.
+.git
 .gitignore
 .dockerignore
-
-# Stale local build artifacts (rebuilt inside the image)
-citadel
-*.db
-
-# Not needed for the build
 Dockerfile
 README.md
-test
+docs
+moria
+*.db
+config*.json
+.env
