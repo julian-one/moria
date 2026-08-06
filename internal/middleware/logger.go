@@ -28,7 +28,7 @@ func Logger(logger *slog.Logger) Middleware {
 			requestID := uuid.New().String()
 			logCtx := &LogContext{}
 
-			// Add logCtx to context so inner middlewares/handlers can populate it
+			// Inner middleware populates logCtx; read after the handler returns.
 			ctx := context.WithValue(r.Context(), LogContextKey, logCtx)
 			r = r.WithContext(ctx)
 
@@ -38,7 +38,6 @@ func Logger(logger *slog.Logger) Middleware {
 			rw := &responseWriter{ResponseWriter: w, status: http.StatusOK}
 			next.ServeHTTP(rw, r)
 
-			// Read updated fields from logCtx
 			fields := []any{
 				"method", r.Method,
 				"path", r.URL.Path,

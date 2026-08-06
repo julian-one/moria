@@ -10,7 +10,6 @@ import (
 )
 
 // Hash uses scrypt with OWASP 2024 recommended parameters.
-// N=32768 (2^15), r=8, p=1, keyLen=32
 func Hash(password string, salt []byte) (string, []byte, error) {
 	if salt == nil {
 		salt = make([]byte, 32)

@@ -13,15 +13,15 @@ type Chain struct {
 	middlewares []Middleware
 }
 
-// New creates a new middleware chain
-func New(m Middleware) Chain {
-	return Chain{middlewares: []Middleware{m}}
+// New creates a middleware chain from the given middleware.
+func New(m ...Middleware) Chain {
+	return Chain{middlewares: slices.Clone(m)}
 }
 
-// Append adds a middleware to the chain, returning a new chain.
-func (c Chain) Append(m Middleware) Chain {
+// Append adds middleware to the chain, returning a new chain.
+func (c Chain) Append(m ...Middleware) Chain {
 	return Chain{
-		middlewares: append(slices.Clone(c.middlewares), m),
+		middlewares: append(slices.Clone(c.middlewares), m...),
 	}
 }
 

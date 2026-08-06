@@ -1,43 +1,13 @@
 package session
 
-import (
-	"net/http"
-	"time"
-)
+import "time"
 
 const (
+	// SessionDuration is the server-side session lifetime; shire's browser
+	// cookie uses the same duration.
 	SessionDuration = 24 * time.Hour
+
+	// CookieName is the cookie shire forwards the session id under. Moria
+	// only reads it; shire owns setting and clearing it in the browser.
+	CookieName = "TOKEN"
 )
-
-const (
-	CookieName     = "TOKEN"
-	cookieMaxAge   = int(SessionDuration / time.Second)
-	cookiePath     = "/"
-	cookieSecure   = true
-	cookieHTTPOnly = true
-	cookieSameSite = http.SameSiteStrictMode
-)
-
-func SetSessionCookie(w http.ResponseWriter, sessionID string) {
-	http.SetCookie(w, &http.Cookie{
-		Name:     CookieName,
-		Value:    sessionID,
-		Path:     cookiePath,
-		MaxAge:   cookieMaxAge,
-		Secure:   cookieSecure,
-		HttpOnly: cookieHTTPOnly,
-		SameSite: cookieSameSite,
-	})
-}
-
-func ClearSessionCookie(w http.ResponseWriter) {
-	http.SetCookie(w, &http.Cookie{
-		Name:     CookieName,
-		Value:    "",
-		Path:     cookiePath,
-		MaxAge:   -1, // Immediately expire
-		Secure:   cookieSecure,
-		HttpOnly: cookieHTTPOnly,
-		SameSite: cookieSameSite,
-	})
-}

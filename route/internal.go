@@ -13,8 +13,7 @@ import (
 )
 
 // ValidateSession serves the cluster-internal session validation endpoint.
-// It is only mounted on the internal listener and must never be exposed
-// through the public ingress.
+// It is unauthenticated and must never be exposed through an ingress.
 func ValidateSession(logger *slog.Logger, db *sqlx.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		sessionID := r.PathValue("id")

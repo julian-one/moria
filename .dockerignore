@@ -1,4 +1,4 @@
-.git
+# .git stays in the context so the build can stamp the VCS revision.
 .gitignore
 .dockerignore
 

@@ -47,7 +47,6 @@ func Register(
 			return
 		}
 
-		// Validate username uniqueness
 		usernameTaken, err := user.IsUsernameTaken(ctx, db, request.Username)
 		if err != nil {
 			logger.Error("failed to check username", "error", err)
@@ -65,7 +64,6 @@ func Register(
 			return
 		}
 
-		// Validate email uniqueness
 		emailTaken, err := user.IsEmailTaken(ctx, db, request.Email)
 		if err != nil {
 			logger.Error("failed to check email", "error", err)
@@ -83,8 +81,7 @@ func Register(
 			return
 		}
 
-		// Create signed verification token
-		t, err := token.Create(signingKey, request.Username, request.Email)
+		t, err := token.CreateVerification(signingKey, request.Username, request.Email)
 		if err != nil {
 			logger.Error("failed to create verification token", "error", err)
 			w.Header().Set("Content-Type", "application/json")
@@ -93,7 +90,6 @@ func Register(
 			return
 		}
 
-		// Send verification email
 		err = emailClient.SendVerification(
 			request.Email,
 			request.Username,
@@ -141,8 +137,7 @@ func VerifyRegistration(logger *slog.Logger, signingKey string) http.HandlerFunc
 			return
 		}
 
-		// Validate token
-		claims, err := token.Verify(signingKey, request.Token)
+		claims, err := token.Verify(signingKey, request.Token, token.PurposeVerify)
 		if err != nil {
 			logger.Warn("verification failed", "error", err)
 			w.Header().Set("Content-Type", "application/json")
@@ -189,8 +184,7 @@ func CompleteRegistration(logger *slog.Logger, db *sqlx.DB, signingKey string) h
 			return
 		}
 
-		// Validate token
-		claims, err := token.Verify(signingKey, request.Token)
+		claims, err := token.Verify(signingKey, request.Token, token.PurposeVerify)
 		if err != nil {
 			logger.Warn("complete-registration token verification failed", "error", err)
 			w.Header().Set("Content-Type", "application/json")
@@ -223,8 +217,6 @@ func CompleteRegistration(logger *slog.Logger, db *sqlx.DB, signingKey string) h
 				Encode(map[string]string{"error": "Account created but failed to create session"})
 			return
 		}
-		session.SetSessionCookie(w, s.SessionID)
-
 		logger.Info("email verified and user created", "user_id", userID)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -245,9 +237,11 @@ func Login(logger *slog.Logger, db *sqlx.DB) http.HandlerFunc {
 			return
 		}
 
-		// Get user by email or username in order to compare the provided password
 		u, err := user.ByEmailOrUsername(ctx, db, identifier)
 		if err != nil {
+			// Burn a scrypt comparison anyway so response timing does not
+			// reveal whether the account exists.
+			_, _ = user.Verify(password, "", nil)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnauthorized)
 			json.NewEncoder(w).Encode(map[string]string{"error": "Invalid credentials"})
@@ -277,8 +271,6 @@ func Login(logger *slog.Logger, db *sqlx.DB) http.HandlerFunc {
 			json.NewEncoder(w).Encode(map[string]string{"error": "Failed to create session"})
 			return
 		}
-		session.SetSessionCookie(w, s.SessionID)
-
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(s)
@@ -287,19 +279,18 @@ func Login(logger *slog.Logger, db *sqlx.DB) http.HandlerFunc {
 
 func Logout(logger *slog.Logger, db *sqlx.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Logout is best-effort: a missing cookie or failed delete still
+		// returns 204 so shire always clears the browser cookie.
 		cookie, err := r.Cookie(session.CookieName)
 		if err != nil || cookie.Value == "" {
-			// Don't return an error if the cookie is missing or empty, just treat it as a successful logout
 			logger.Info("no session cookie found, treating as successful logout")
 		} else {
 			err = session.Delete(r.Context(), db, cookie.Value)
 			if err != nil {
-				// Don't return an error if session deletion fails, just log it and continue with clearing the cookie
 				logger.Error("failed to delete session", "error", err)
 			}
 		}
 
-		session.ClearSessionCookie(w)
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
@@ -340,8 +331,7 @@ func ForgotPassword(
 			// Do not leak whether the email exists or not
 			logger.Info("forgot password requested for non-existent email", "email", request.Email)
 		} else {
-			// Generate token
-			t, err := token.Create(signingKey, u.Username, u.Email)
+			t, err := token.CreateReset(signingKey, u.Username, u.Email, u.Hash)
 			if err != nil {
 				logger.Error("failed to create forgot-password token", "error", err)
 				w.Header().Set("Content-Type", "application/json")
@@ -350,7 +340,6 @@ func ForgotPassword(
 				return
 			}
 
-			// Send email
 			err = emailClient.SendPasswordReset(
 				u.Email,
 				u.Username,
@@ -401,8 +390,7 @@ func ResetPassword(logger *slog.Logger, db *sqlx.DB, signingKey string) http.Han
 			return
 		}
 
-		// Validate token
-		claims, err := token.Verify(signingKey, request.Token)
+		claims, err := token.Verify(signingKey, request.Token, token.PurposeReset)
 		if err != nil {
 			logger.Warn("reset-password token verification failed", "error", err)
 			w.Header().Set("Content-Type", "application/json")
@@ -419,6 +407,17 @@ func ResetPassword(logger *slog.Logger, db *sqlx.DB, signingKey string) http.Han
 			w.WriteHeader(http.StatusBadRequest)
 			json.NewEncoder(w).
 				Encode(map[string]string{"error": "Invalid token payload"})
+			return
+		}
+
+		// A reset token is bound to the password hash it was issued against,
+		// so it self-invalidates once the password changes.
+		if !claims.BoundTo(u.Hash) {
+			logger.Warn("reset token issued for a previous password", "user_id", u.ID)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).
+				Encode(map[string]string{"error": "Invalid or expired reset token"})
 			return
 		}
 

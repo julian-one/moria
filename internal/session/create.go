@@ -19,7 +19,7 @@ func Create(
 		`INSERT INTO sessions (session_id, user_id, expires_at) VALUES (?, ?, ?) RETURNING *;`,
 		uuid.New().String(),
 		userID,
-		time.Now().Add(SessionDuration),
+		time.Now().UTC().Add(SessionDuration),
 	).StructScan(&s)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create session: %w", err)

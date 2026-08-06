@@ -1,17 +1,13 @@
 package route
 
 import (
-	"context"
 	"log/slog"
 	"net/http"
-	"time"
 
 	"moria/internal/email"
 	"moria/internal/middleware"
 
 	"github.com/jmoiron/sqlx"
-	"github.com/rs/cors"
-	"golang.org/x/time/rate"
 )
 
 type Config struct {
@@ -21,29 +17,16 @@ type Config struct {
 	SigningKey string
 }
 
-func Initialize(ctx context.Context, config Config) http.Handler {
+func Initialize(config Config) http.Handler {
 	baseChain := middleware.New(
 		middleware.Logger(config.Logger),
+		middleware.BodyLimit(1<<20),
 	)
 	protectedChain := baseChain.Append(
 		middleware.Authentication(config.DB),
 	)
-	// NOTE: Admin middleware is used as part of the protected chain
 	adminChain := protectedChain.Append(
 		middleware.Admin(config.DB),
-	)
-
-	// 10 requests per minute (1 token every 6 secs), max burst of 3
-	registerChain := baseChain.Append(
-		middleware.NewRateLimiter(ctx, rate.Every(time.Minute/10), 3),
-	)
-	// 3 requests per 15 minutes (1 token every 5 mins), max burst of 1
-	forgotPasswordChain := baseChain.Append(
-		middleware.NewRateLimiter(ctx, rate.Every(15*time.Minute/3), 1),
-	)
-	// 10 requests per minute (1 token every 6 secs), max burst of 3
-	loginChain := baseChain.Append(
-		middleware.NewRateLimiter(ctx, rate.Every(time.Minute/10), 3),
 	)
 
 	mux := http.NewServeMux()
@@ -56,9 +39,11 @@ func Initialize(ctx context.Context, config Config) http.Handler {
 	// -----------------
 	// Auth
 	// -----------------
+	// Register, login, and forgot-password are rate limited upstream at
+	// Traefik (docs/security.md).
 	mux.Handle(
 		"POST /register",
-		registerChain.Wrap(Register(config.Logger, config.DB, config.Email, config.SigningKey)),
+		baseChain.Wrap(Register(config.Logger, config.DB, config.Email, config.SigningKey)),
 	)
 	mux.Handle(
 		"POST /register/verify",
@@ -68,11 +53,11 @@ func Initialize(ctx context.Context, config Config) http.Handler {
 		"POST /register/complete",
 		baseChain.Wrap(CompleteRegistration(config.Logger, config.DB, config.SigningKey)),
 	)
-	mux.Handle("POST /login", loginChain.Wrap(Login(config.Logger, config.DB)))
+	mux.Handle("POST /login", baseChain.Wrap(Login(config.Logger, config.DB)))
 	mux.Handle("POST /logout", baseChain.Wrap(Logout(config.Logger, config.DB)))
 	mux.Handle(
 		"POST /forgot-password",
-		forgotPasswordChain.Wrap(
+		baseChain.Wrap(
 			ForgotPassword(config.Logger, config.DB, config.Email, config.SigningKey),
 		),
 	)
@@ -110,25 +95,11 @@ func Initialize(ctx context.Context, config Config) http.Handler {
 		adminChain.Wrap(DeleteAllSessions(config.Logger, config.DB)),
 	)
 
-	c := cors.New(cors.Options{
-		AllowedOrigins:   []string{"https://julian-one.com", "http://localhost:3000"},
-		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Content-Type", "Authorization", "Cache-Control"},
-		AllowCredentials: true,
-		MaxAge:           300,
-	})
-
-	return c.Handler(mux)
-}
-
-// InitializeInternal builds the handler for the cluster-internal listener.
-// It serves only session validation and is never routed through the ingress.
-func InitializeInternal(ctx context.Context, config Config) http.Handler {
-	baseChain := middleware.New(
-		middleware.Logger(config.Logger),
-	)
-
-	mux := http.NewServeMux()
+	// -----------------
+	// Internal (service-to-service)
+	// -----------------
+	// Unauthenticated by design — safe only because moria has no ingress
+	// (docs/security.md).
 	mux.Handle(
 		"GET /internal/sessions/{id}",
 		baseChain.Wrap(ValidateSession(config.Logger, config.DB)),
@@ -138,5 +109,6 @@ func InitializeInternal(ctx context.Context, config Config) http.Handler {
 		baseChain.Wrap(ListUsersInternal(config.Logger, config.DB)),
 	)
 
+	// No CORS: browsers never talk to moria directly (docs/security.md).
 	return mux
 }

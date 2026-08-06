@@ -3,6 +3,7 @@ package test
 import (
 	"encoding/base64"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -37,6 +38,17 @@ func TestLogin_WithUsername(t *testing.T) {
 	defer resp.Body.Close()
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestRegister_BodyTooLarge(t *testing.T) {
+	// A valid JSON prefix keeps the decoder reading until it hits the 1 MiB cap.
+	body := `{"username":"` + strings.Repeat("a", 1<<20+1024) + `"}`
+
+	resp, err := http.Post(server.URL+"/register", "application/json", strings.NewReader(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
 func TestLogin_InvalidCredentials(t *testing.T) {

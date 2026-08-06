@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"runtime/debug"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -15,7 +16,7 @@ var cfgFile string
 
 var rootCmd = &cobra.Command{
 	Use:     "moria",
-	Version: "0.1.0",
+	Version: version(),
 	Short:   "Moria - The authentication service",
 	Long: `Moria is the standalone authentication service.
 		It owns users and sessions, and serves registration, login,
@@ -30,6 +31,33 @@ func Execute() {
 	if err != nil {
 		os.Exit(1)
 	}
+}
+
+// version prefers the module version stamped by the toolchain, then the VCS
+// revision recorded at build time.
+func version() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "devel"
+	}
+	if v := info.Main.Version; v != "" && v != "(devel)" {
+		return v
+	}
+	var revision, dirty string
+	for _, s := range info.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			revision = s.Value
+		case "vcs.modified":
+			if s.Value == "true" {
+				dirty = "-dirty"
+			}
+		}
+	}
+	if revision != "" {
+		return revision[:min(12, len(revision))] + dirty
+	}
+	return "devel"
 }
 
 func init() {
@@ -47,7 +75,6 @@ func init() {
 func initializeConfig() error {
 	viper.SetDefault("server.port", "8081")
 	viper.SetDefault("server.base_url", "https://julian-one.com")
-	viper.SetDefault("internal.port", "8082")
 	viper.SetDefault("database.path", "./moria.db")
 	viper.SetDefault("database.schema", "./schema/model.sql")
 	viper.SetDefault("resend.from_email", "noreply@contact.julian-one.com")

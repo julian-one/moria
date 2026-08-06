@@ -26,12 +26,10 @@ func ParseListOptions(r *http.Request) (ListOptions, error) {
 
 	var opts ListOptions
 
-	// Parse search parameter
 	if search := query.Get("search"); search != "" {
 		opts.Search = search
 	}
 
-	// Parse role filter
 	if roleStr := query.Get("role"); roleStr != "" {
 		role := Role(roleStr)
 		if !role.Valid() {
@@ -121,7 +119,7 @@ func List(ctx context.Context, db sqlx.QueryerContext, opts ListOptions) ([]User
 		query = query.OrderBy("u.created_at DESC")
 	}
 
-	query = query.Limit(uint64(opts.Pagination.Limit)).Offset(uint64(opts.Pagination.Offset))
+	query = query.Limit(uint64(opts.Pagination.Limit)).Offset(uint64(opts.Pagination.Offset)) //nolint:gosec // ParsePagination guarantees Limit >= 1 and Offset >= 0.
 
 	sql, args, err := query.ToSql()
 	if err != nil {

@@ -1,7 +1,6 @@
 package test
 
 import (
-	"context"
 	"flag"
 	"io"
 	"log/slog"
@@ -13,22 +12,19 @@ import (
 	"moria/route"
 
 	"github.com/jmoiron/sqlx"
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 )
 
 var (
-	server         *httptest.Server
-	internalServer *httptest.Server
-	db             *sqlx.DB
-	td             *TestData
+	server *httptest.Server
+	db     *sqlx.DB
+	td     *TestData
 )
 
 func TestMain(m *testing.M) {
 	flag.Parse()
 
-	ctx := context.Background()
-
-	db = sqlx.MustConnect("sqlite3", ":memory:?_foreign_keys=on")
+	db = sqlx.MustConnect("sqlite", "file::memory:?_pragma=foreign_keys(1)&_time_format=sqlite")
 
 	schemaSQL, err := os.ReadFile(filepath.Join("..", "schema", "model.sql"))
 	if err != nil {
@@ -43,13 +39,12 @@ func TestMain(m *testing.M) {
 	}
 	logger := slog.New(slog.NewJSONHandler(logOutput, nil))
 
-	// Initialize both listeners with the test database and logger
+	// Initialize the router with the test database and logger
 	config := route.Config{
 		DB:     db,
 		Logger: logger,
 	}
-	server = httptest.NewServer(route.Initialize(ctx, config))
-	internalServer = httptest.NewServer(route.InitializeInternal(ctx, config))
+	server = httptest.NewServer(route.Initialize(config))
 
 	// Seed the database with test data
 	td = Seed(db)
@@ -59,7 +54,6 @@ func TestMain(m *testing.M) {
 
 	// NOTE: defer doesn't work here because os.Exit will terminate the program immediately
 	server.Close()
-	internalServer.Close()
 	db.Close()
 
 	os.Exit(code)

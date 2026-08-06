@@ -12,7 +12,7 @@ import (
 )
 
 func TestValidateSession_Valid(t *testing.T) {
-	resp, err := http.Get(internalServer.URL + "/internal/sessions/" + td.User.Session)
+	resp, err := http.Get(server.URL + "/internal/sessions/" + td.User.Session)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -26,7 +26,7 @@ func TestValidateSession_Valid(t *testing.T) {
 }
 
 func TestValidateSession_AdminRole(t *testing.T) {
-	resp, err := http.Get(internalServer.URL + "/internal/sessions/" + td.Admin.Session)
+	resp, err := http.Get(server.URL + "/internal/sessions/" + td.Admin.Session)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -39,7 +39,7 @@ func TestValidateSession_AdminRole(t *testing.T) {
 }
 
 func TestValidateSession_Unknown(t *testing.T) {
-	resp, err := http.Get(internalServer.URL + "/internal/sessions/not-a-session")
+	resp, err := http.Get(server.URL + "/internal/sessions/not-a-session")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -53,15 +53,7 @@ func TestValidateSession_Expired(t *testing.T) {
 		"expired-session-id", td.User.ID,
 	)
 
-	resp, err := http.Get(internalServer.URL + "/internal/sessions/expired-session-id")
-	require.NoError(t, err)
-	defer resp.Body.Close()
-
-	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
-}
-
-func TestValidateSession_NotOnPublicListener(t *testing.T) {
-	resp, err := http.Get(server.URL + "/internal/sessions/" + td.User.Session)
+	resp, err := http.Get(server.URL + "/internal/sessions/expired-session-id")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -70,7 +62,7 @@ func TestValidateSession_NotOnPublicListener(t *testing.T) {
 
 func TestInternalListUsers(t *testing.T) {
 	resp, err := http.Get(
-		internalServer.URL + "/internal/users?ids=" + td.User.ID + "," + td.Admin.ID + ",missing",
+		server.URL + "/internal/users?ids=" + td.User.ID + "," + td.Admin.ID + ",missing",
 	)
 	require.NoError(t, err)
 	defer resp.Body.Close()
@@ -92,7 +84,7 @@ func TestInternalListUsers(t *testing.T) {
 }
 
 func TestInternalListUsers_Empty(t *testing.T) {
-	resp, err := http.Get(internalServer.URL + "/internal/users?ids=")
+	resp, err := http.Get(server.URL + "/internal/users?ids=")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 

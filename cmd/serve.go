@@ -1,48 +1,57 @@
 package cmd
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"moria/internal/database"
 	"moria/internal/email"
 	"moria/internal/logger"
+	"moria/internal/session"
 	"moria/route"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	"golang.org/x/sync/errgroup"
 )
 
 var serveCmd = &cobra.Command{
 	Use:   "serve",
-	Short: "Start the Moria HTTP servers",
-	Long:  `The serve command starts the public auth API and the cluster-internal validation listener`,
+	Short: "Start the Moria HTTP server",
+	Long:  `The serve command starts the auth API, including the cluster-internal /internal/* routes`,
 	RunE:  runServe,
 }
 
 func init() {
 	rootCmd.AddCommand(serveCmd)
 
-	serveCmd.Flags().StringP("port", "p", "8081", "port for the public API")
-	serveCmd.Flags().String("internal-port", "8082", "port for the internal validation API")
+	serveCmd.Flags().StringP("port", "p", "8081", "port for the auth API")
 	serveCmd.Flags().String("db-path", "./moria.db", "path to the SQLite database")
 	serveCmd.Flags().String("db-schema", "./schema/model.sql", "path to the database schema file")
 
 	_ = viper.BindPFlag("server.port", serveCmd.Flags().Lookup("port"))
-	_ = viper.BindPFlag("internal.port", serveCmd.Flags().Lookup("internal-port"))
 	_ = viper.BindPFlag("database.path", serveCmd.Flags().Lookup("db-path"))
 	_ = viper.BindPFlag("database.schema", serveCmd.Flags().Lookup("db-schema"))
 }
 
-func runServe(cmd *cobra.Command, args []string) error {
-	ctx := cmd.Context()
+// shutdownGrace must stay under kubernetes' 30s termination grace period,
+// after which the pod is SIGKILLed. See docs/graceful-shutdown.md.
+const shutdownGrace = 15 * time.Second
 
-	// Initialize logger
+func runServe(cmd *cobra.Command, args []string) error {
+	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	l := logger.New(slog.LevelInfo)
 	slog.SetDefault(l)
 
-	// Initialize database
 	db, err := database.New(
 		viper.GetString("database.path"),
 		viper.GetString("database.schema"),
@@ -50,9 +59,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to connect to database: %w", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
-	// Initialize email client
 	emailClient := email.New(
 		viper.GetString("resend.api_key"),
 		viper.GetString("resend.from_email"),
@@ -66,24 +74,44 @@ func runServe(cmd *cobra.Command, args []string) error {
 		SigningKey: viper.GetString("hmac.signing_key"),
 	}
 
-	publicHandler := route.Initialize(ctx, config)
-	internalHandler := route.InitializeInternal(ctx, config)
+	srv := &http.Server{
+		Addr:              ":" + viper.GetString("server.port"),
+		Handler:           route.Initialize(config),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		// Leaves room for the synchronous Resend call in register/forgot-password.
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  2 * time.Minute,
+	}
 
-	port := viper.GetString("server.port")
-	internalPort := viper.GetString("internal.port")
+	g, gctx := errgroup.WithContext(ctx)
 
-	errCh := make(chan error, 2)
+	g.Go(func() error {
+		l.Info("server listening", "addr", srv.Addr)
+		// ErrServerClosed is the normal return after Shutdown, not a failure.
+		if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+			return fmt.Errorf("server stopped: %w", err)
+		}
+		return nil
+	})
 
-	go func() {
-		l.Info("public server listening", "port", port)
-		errCh <- fmt.Errorf("public server stopped: %w",
-			http.ListenAndServe(":"+port, publicHandler))
-	}()
-	go func() {
-		l.Info("internal server listening", "port", internalPort)
-		errCh <- fmt.Errorf("internal server stopped: %w",
-			http.ListenAndServe(":"+internalPort, internalHandler))
-	}()
+	g.Go(func() error {
+		session.PurgeLoop(gctx, l, db)
+		return nil
+	})
 
-	return <-errCh
+	g.Go(func() error {
+		<-gctx.Done()
+		l.Info("shutting down", "grace", shutdownGrace)
+
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
+		defer cancel()
+		return srv.Shutdown(shutdownCtx)
+	})
+
+	if err := g.Wait(); err != nil {
+		return err
+	}
+	l.Info("shutdown complete")
+	return nil
 }
