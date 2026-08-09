@@ -24,21 +24,22 @@ func Execute() {
 func init() {
 	var config string
 	root.PersistentFlags().
-		StringVar(&config, "config", "", "config file (default is config.json)")
+		StringVar(&config, "config", "", "config file (default is .moria.json)")
 
-	// OnInitialize runs after flag parsing, so --config is visible here.
 	cobra.OnInitialize(func() {
+		slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+
+		viper.SetEnvPrefix("moria")
+		viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
+
 		if config != "" {
 			viper.SetConfigFile(config)
 		} else {
 			viper.AddConfigPath(".")
 			viper.SetConfigType("json")
-			viper.SetConfigName("config")
+			viper.SetConfigName(".moria")
 		}
 
-		viper.SetEnvPrefix("MORIA")
-		viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
-		viper.AutomaticEnv()
 		if err := viper.ReadInConfig(); err == nil {
 			slog.Info("using config file", "file", viper.ConfigFileUsed())
 		}

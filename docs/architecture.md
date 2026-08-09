@@ -1,105 +1,116 @@
 # Architecture
 
-Moria is the standalone authentication service for julian-one.com. It owns the
-`users` and `sessions` tables (extracted from citadel during the auth cutover)
-and is the only service that touches credentials.
+Moria is the cluster-internal auth API for julian-one.com: one Go binary,
+one listener, one SQLite file. It has **no ingress and no certificate** —
+the only thing that can reach it is shire's Node server, over cluster DNS.
 
-## One listener, one binary
+For the stack-wide view (router, k3s, Traefik, shire) see
+[`../../docs/architecture.md`](../../docs/architecture.md). This directory
+covers moria only:
 
-`moria serve` starts a single HTTP server on :8081. It is not reachable from
-outside the cluster — moria has **no ingress**; shire's Node server is the
-only path from the internet to the auth API.
+| doc                            | scope                                        |
+|--------------------------------|----------------------------------------------|
+| architecture.md (this)         | topology, deployment, config surface         |
+| [contract.md](contract.md)     | the HTTP contract shire depends on           |
+| [internals.md](internals.md)   | code layout, middleware, SQLite, shutdown    |
+| [security.md](security.md)     | trust model, passwords, roles                |
 
-Two route families share the listener:
+```
+shire (Node/SvelteKit, :3000)
+   │ http://moria.industries.svc.cluster.local   ClusterIP moria:80
+   ▼
+moria (:8081) ──▶ /app/data/moria.db  (hostPath /data/moria, jarvis only)
+```
 
-- **User-facing** — registration, login/logout, password recovery,
-  user/session management. Called server-side by shire via ClusterIP
-  `moria:80`. Enforces session/admin auth. Rate limiting happens upstream
-  at Traefik (`stark/traefik/ratelimit.yaml`).
-- **`/internal/*`** — `GET /internal/sessions/{id}` (session validation) and
-  `GET /internal/users?ids=...` (batch user hydration). Called by citadel.
-  Unauthenticated, trusted service-to-service lookups only.
+## 1. Position in the cluster
 
-The trust model behind these choices (unauthenticated internals, XFF, no
-CORS, upstream rate limiting) and the credential design (sessions, email
-tokens, passwords) are in [security.md](security.md).
+- Namespace `industries`. ClusterIP `moria:80 → 8081`. No IngressRoute, no
+  cert, no NodePort — verified unreachable from the LAN.
+- **The browser never talks to moria.** Shire's server is the sole caller,
+  so there is no CORS handling anywhere and no session credential ever
+  reaches browser JS. See [security.md](security.md) for why this is the
+  whole security model.
+- Plain HTTP inside the cluster; TLS terminates at Traefik.
 
-### Why no ingress
+## 2. Deployment (`stark/moria/`)
 
-Until the 2026-07 cutover the public listener was exposed at
-`auth.julian-one.com` and the browser called it directly. That forced CORS,
-a Bearer-token copy of the session id in client-side JS (readable by any
-XSS), and made the two-listener split a load-bearing security boundary
-protecting the unauthenticated `/internal/*` routes. Routing everything
-through shire removed all three: the cluster boundary is now the only
-topology that matters and no session credential ever reaches the browser.
-The ingress, certificate, and `auth.julian-one.com` DNS record were deleted
-with the cutover, and the second listener was collapsed into the first once
-the port split stopped being a security boundary (improvement A3).
+`strategy: Recreate`, not RollingUpdate — SQLite takes exactly one writer
+and every pod generation mounts the same hostPath, so overlapping
+generations would put two writers on one file.
 
-Routes are wired in `route/init.go` (`Initialize`).
+- **`nodeSelector: kubernetes.io/hostname: jarvis`** — the hostPath is
+  node-local, so the database exists only on jarvis. Never unpin it and
+  **never scale up**: a pod landing on friday comes up *healthy* against an
+  empty database rather than failing, which is the worst failure shape
+  available.
+- **initContainer `data-permissions`** chowns `/app/data` to 65532 and
+  chmods 700. `DirectoryOrCreate` makes the hostPath root-owned and the
+  container runs as distroless nonroot, which cannot otherwise write it.
+- **readinessProbe on `/health`. No liveness probe** — liveness pointed at
+  the same endpoint as readiness turns transient slowness into restart
+  storms, and a crashed process restarts via `restartPolicy` regardless.
+- Env is only `MORIA_DATABASE_PATH=/app/data/moria.db` and
+  `MORIA_SEED_PATH=/app/seed/seeding.sql`, the latter from the `moria-seed`
+  Secret mounted read-only at `/app/seed`. The seed re-applies on every
+  boot against a database that now survives; that is safe **only** because
+  the seed is `INSERT OR IGNORE`, so existing rows — including changed
+  passwords — are left alone. Keep any future seed file `INSERT OR IGNORE`.
 
-## Role in the k3s cluster
+### Image
 
-The cluster runs on a Raspberry Pi 4 ("jarvis") with k3s, Traefik ingress, and
-cert-manager (Let's Encrypt). Manifests live in the sibling repo
-`stark/moria/`:
+Multi-stage: `golang:1.26-alpine` build → `gcr.io/distroless/static-debian12:nonroot`.
+`CGO_ENABLED=0` (pure-Go `modernc.org/sqlite`, so no libc in the runtime
+image), `-trimpath`, `ENTRYPOINT /usr/local/bin/moria` with `CMD ["serve"]`.
 
-- `deployment.yaml` — single replica, pinned to jarvis via `nodeSelector`,
-  image `julianone/moria:latest`. Secrets `RESEND_API_KEY` and
-  `HMAC_SIGNING_KEY` come from the `moria-secrets` Secret.
-- `service.yaml` — ClusterIP `moria`: port 80 → 8081 (auth API, including
-  `/internal/*`). There is no ingress and no certificate — nothing outside
-  the cluster can reach moria.
-- `configmap.yaml` — mounted as `/app/config.json` (db path, port).
-- `cronjob-backup.yaml` — daily (04:10) `sqlite3 .backup` of `moria.db`,
-  keeping the 7 most recent.
-- `job-migrate.yaml` — one-off users/sessions migration out of `citadel.db`;
-  only run during cutover with citadel and moria scaled to 0.
+Build and roll with `./deploy.sh moria` from the repo root: buildx arm64 →
+Docker Hub `julianone/moria:latest` → rollout. The `:latest` tag defaults
+the pull policy to `Always`, so a rollout restart re-pulls.
 
-## Storage
+## 3. Config surface — one name, three places
 
-SQLite at `/app/data/moria.db`, backed by a `hostPath` volume (`/data/moria`)
-on jarvis. This is why the deployment is a single replica pinned to one node —
-do not scale it up. Schema (`schema/model.sql`) is applied idempotently at
-startup.
+Three keys, all declared as flags on `serve`:
 
-Connection options ride on the DSN so they apply to every pooled connection —
-a bare `Exec("PRAGMA ...")` only reaches the one connection it happens to run
-on (`internal/database/init.go`):
+| flag              | env                    | `.moria.json`     | default    |
+|-------------------|------------------------|-------------------|------------|
+| `--listen-port`   | `MORIA_LISTEN_PORT`    | `"listen-port"`   | `8081`     |
+| `--database-path` | `MORIA_DATABASE_PATH`  | `"database-path"` | `moria.db` |
+| `--seed-path`     | `MORIA_SEED_PATH`      | `"seed-path"`     | `""`       |
 
-- `foreign_keys(1)` — referential integrity checks
-- `journal_mode(WAL)` — concurrent reads, so the backup CronJob can run
-  against a live server
-- `busy_timeout(5000)` — wait under contention instead of failing with
-  `SQLITE_BUSY`
-- `_time_format=sqlite` — store `time.Time` in SQLite's `datetime()` format,
-  so string comparisons against `datetime('now')` (session expiry, purge)
-  keep working
+Precedence: viper defaults → `.moria.json` → env → flags.
 
-## Who talks to moria
+Declaring a flag wires all three surfaces at once — there is no second list
+to keep in sync. `PreRun` names no keys: it calls `viper.BindPFlags` then
+`VisitAll` with one-arg `viper.BindEnv(f.Name)`. See
+[internals.md](internals.md) for why that ordering is load-bearing.
 
-- **shire (Node server)** proxies all auth traffic; the browser never calls
-  moria. Base URL comes from the server-only `MORIA_API_URL`
-  (`http://moria.industries.svc.cluster.local`, see
-  `shire/src/lib/controllers/moria.ts`). Shire owns the browser session
-  cookie: it sets the opaque session id from login/registration responses as
-  `TOKEN` on `julian-one.com` (HttpOnly, Secure, SameSite=Strict, 24h), and
-  on each request forwards it to moria as a `Cookie` header along with the
-  originating client IP as `X-Forwarded-For` for request logging
-  (`shire/src/lib/controllers/context.server.ts`). There is no CORS
-  handling — all calls are server-to-server.
-- **citadel** never reads the users/sessions tables. It validates the `TOKEN`
-  cookie and hydrates usernames through the `/internal/*` routes
-  (`http://moria.industries.svc.cluster.local`) via a caching client
-  (`citadel/internal/auth/client.go`, 60s TTL — revocation propagates within
-  that window).
+### The naming rule that must not be broken
 
-## Deploy
+k8s **service links** are on (the default): every Service in `industries`
+injects docker-links vars into every pod — `MORIA_PORT=tcp://10.43.x.x:80`,
+`MORIA_SERVICE_HOST`, and friends. Nothing consumes them; discovery is
+cluster DNS.
 
-From the repo root: `./deploy.sh moria` — buildx builds and pushes
-`julianone/moria:latest`, then rolls the deployment. The SQLite driver is
-pure Go (`modernc.org/sqlite`), so the Dockerfile builds a static
-`CGO_ENABLED=0` binary and ships it on distroless `static` as the `nonroot`
-user; an initContainer in `stark/moria/deployment.yaml` chowns the hostPath
-data dir to uid 65532 before startup.
+They are inert **only because** moria's keys bind to names the injector can
+never produce. The flag is `--listen-port` and not `--port` precisely
+because `MORIA_PORT` arrives in every pod as `tcp://10.43.x.x:80` and once
+crash-looped the pod with `too many colons in address`.
+
+There is **no `AutomaticEnv`** — the env surface is a closed list, so a
+stray `MORIA_*` var cannot become a config key on its own. That closes the
+general hole but not this one: the danger is a *declared* flag whose name
+collides. Name new flags and secrets clear of `MORIA_PORT*` and
+`MORIA_SERVICE_*`.
+
+## 4. Local development
+
+From the repo root:
+
+- `make moria` — moria alone, seeded from `schema/test_user.sql`
+- `make dev` — moria + shire, Ctrl-C stops both
+- `make check` — `go vet ./... && golangci-lint run && go test ./...`
+- `make validate` — curls `/health`, then greps shire's SSR home page for
+  the badge (requires `make dev` running)
+
+`.moria.json` is gitignored; it sets the same three keys for a bare
+`go run . serve`. The seeded dev account is `test` / `test@example.com`
+with role `admin` (`schema/test_user.sql`).
