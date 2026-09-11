@@ -1,0 +1,32 @@
+package session
+
+import (
+	"context"
+	"crypto/rand"
+	"database/sql"
+	"encoding/hex"
+	"fmt"
+	"time"
+)
+
+func Create(ctx context.Context, db *sql.DB, userID string) (*Session, Token, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return nil, "", fmt.Errorf("failed to generate session token: %w", err)
+	}
+	token := Token(hex.EncodeToString(buf))
+
+	var s Session
+	err := s.scan(db.QueryRowContext(ctx,
+		`INSERT INTO sessions (session_id, user_id, expires_at)
+		 VALUES ($1, $2, $3)
+		 RETURNING *`,
+		token.ID(),
+		userID,
+		time.Now().UTC().Add(Duration),
+	))
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to create session: %w", err)
+	}
+	return &s, token, nil
+}

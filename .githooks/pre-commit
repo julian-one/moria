@@ -1,0 +1,14 @@
+#!/bin/bash
+set -euo pipefail
+
+STAGED_GO_FILES=$(git diff --cached --name-only --diff-filter=ACM -- '*.go')
+
+if [ -z "$STAGED_GO_FILES" ]; then
+  exit 0
+fi
+
+echo "Formatting started..."
+echo "$STAGED_GO_FILES" | xargs go tool gofumpt -w
+echo "$STAGED_GO_FILES" | xargs go tool golines -w
+echo "$STAGED_GO_FILES" | xargs git add
+echo "Formatting complete!"

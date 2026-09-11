@@ -1,0 +1,11 @@
+.git
+.gitignore
+.dockerignore
+Dockerfile
+README.md
+docs
+moria
+*.db
+config*.json
+.moria.json
+.env
