@@ -11,6 +11,9 @@ format:
 lint:
 	golangci-lint run ./...
 
+verify:
+	make build && make format && make lint
+
 test:
 	go test ./...
 

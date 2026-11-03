@@ -3,21 +3,20 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
 
-func Execute() error {
-	root := RootCmd()
-	if err := root.Execute(); err != nil {
-		return fmt.Errorf("execute: %w", err)
+func Execute() {
+	if err := rootCmd().Execute(); err != nil {
+		os.Exit(1)
 	}
-	return nil
 }
 
-func RootCmd() *cobra.Command {
+func rootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:          "moria",
 		Short:        "Speak friend and enter",

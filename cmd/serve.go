@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 	"github.com/spf13/viper"
 
 	"github.com/julian-one/moria/internal/database"
+	"github.com/julian-one/moria/route"
 )
 
 const (
@@ -24,7 +26,10 @@ func serveCmd() *cobra.Command {
 		Use:   "serve",
 		Short: "Serve the moria API",
 		PreRunE: func(cmd *cobra.Command, _ []string) error {
-			return viper.BindPFlags(cmd.Flags())
+			if err := viper.BindPFlags(cmd.Flags()); err != nil {
+				return fmt.Errorf("bind flags: %w", err)
+			}
+			return nil
 		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
@@ -38,11 +43,13 @@ func serveCmd() *cobra.Command {
 			addr := fmt.Sprintf(":%d", viper.GetInt("port"))
 			server := &http.Server{
 				Addr:              addr,
+				Handler:           route.Initialize(db),
 				ReadHeaderTimeout: readHeaderTimeout,
 				ReadTimeout:       readTimeout,
 				WriteTimeout:      writeTimeout,
 				IdleTimeout:       idleTimeout,
 			}
+			slog.Info("server listening", "addr", addr)
 			if err := server.ListenAndServe(); err != nil {
 				return fmt.Errorf("serve on %s: %w", addr, err)
 			}
