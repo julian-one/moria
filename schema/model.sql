@@ -8,6 +8,8 @@ CREATE TABLE IF NOT EXISTS users (
   updated_at timestamp NOT NULL DEFAULT now()
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS users_username_lower_idx ON users (lower(username));
+
 CREATE TABLE IF NOT EXISTS sessions (
   session_id text PRIMARY KEY,
   user_id text NOT NULL,

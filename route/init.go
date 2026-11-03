@@ -1,27 +1,26 @@
 package route
 
 import (
-	"log/slog"
 	"net/http"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/julian-one/moria/internal/middleware"
+	"github.com/julian-one/moria/internal/user"
 )
 
 func Initialize(db *pgxpool.Pool) *http.ServeMux {
 	mux := http.NewServeMux()
+	authenticated := middleware.Authenticate(db)
+	admin := middleware.Chain(authenticated, middleware.Authorize(user.RoleAdmin))
 
 	mux.HandleFunc("GET /health", Health())
-	mux.HandleFunc("POST /users", CreateUser(db))
+	mux.Handle("POST /users", admin(CreateUser(db)))
+
+	mux.HandleFunc("POST /login", Login(db))
+	mux.HandleFunc("POST /logout", Logout(db))
+
+	mux.Handle("GET /me", authenticated(Me()))
 
 	return mux
-}
-
-func Health() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		slog.InfoContext(r.Context(), "health check", "remote_addr", r.RemoteAddr)
-		w.WriteHeader(http.StatusOK)
-		if _, err := w.Write([]byte("OK")); err != nil {
-			slog.ErrorContext(r.Context(), "write health response", "error", err)
-		}
-	}
 }

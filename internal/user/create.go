@@ -30,7 +30,7 @@ type CreateRequest struct {
 	Password string `json:"password"`
 }
 
-func (cr CreateRequest) Validate(ctx context.Context, db *pgxpool.Pool) error {
+func (cr CreateRequest) Validate() error {
 	if cr.Username == "" {
 		return ErrUsernameRequired
 	}
@@ -41,27 +41,8 @@ func (cr CreateRequest) Validate(ctx context.Context, db *pgxpool.Pool) error {
 	if err != nil || addr.Address != cr.Email {
 		return ErrEmailMalformed
 	}
-	err = validatePassword(cr.Password)
-	if err != nil {
+	if err := validatePassword(cr.Password); err != nil {
 		return err
-	}
-
-	var usernameTaken, emailTaken bool
-	err = db.QueryRow(ctx, `
-		SELECT
-			EXISTS (SELECT 1 FROM users WHERE username = $1),
-			EXISTS (SELECT 1 FROM users WHERE email = $2)`,
-		cr.Username, cr.Email,
-	).Scan(&usernameTaken, &emailTaken)
-	if err != nil {
-		return fmt.Errorf("check existing user: %w", err)
-	}
-
-	if usernameTaken {
-		return ErrUsernameTaken
-	}
-	if emailTaken {
-		return ErrEmailTaken
 	}
 	return nil
 }
@@ -73,8 +54,25 @@ func Create(
 ) (*User, error) {
 	request.Email = strings.ToLower(request.Email)
 
-	if err := request.Validate(ctx, db); err != nil {
+	if err := request.Validate(); err != nil {
 		return nil, err
+	}
+
+	var usernameTaken, emailTaken bool
+	err := db.QueryRow(ctx, `
+		SELECT
+			EXISTS (SELECT 1 FROM users WHERE lower(username) = lower($1) OR email = lower($1)),
+			EXISTS (SELECT 1 FROM users WHERE lower(username) = lower($2) OR email = lower($2))`,
+		request.Username, request.Email,
+	).Scan(&usernameTaken, &emailTaken)
+	if err != nil {
+		return nil, fmt.Errorf("check existing user: %w", err)
+	}
+	if usernameTaken {
+		return nil, ErrUsernameTaken
+	}
+	if emailTaken {
+		return nil, ErrEmailTaken
 	}
 
 	passwordHash, err := hash(request.Password)

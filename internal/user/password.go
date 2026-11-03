@@ -2,6 +2,7 @@ package user
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -21,8 +22,11 @@ const (
 	scryptP        = 1
 )
 
+var errMalformedHash = errors.New("parse password hash: missing separator")
+
 var (
 	ErrInvalidPassword  = errors.New("invalid password")
+	ErrPasswordRequired = fmt.Errorf("%w: must not be empty", ErrInvalidPassword)
 	ErrPasswordTooShort = fmt.Errorf(
 		"%w: must be at least %d characters",
 		ErrInvalidPassword,
@@ -40,6 +44,9 @@ var (
 )
 
 func validatePassword(password string) error {
+	if password == "" {
+		return ErrPasswordRequired
+	}
 	if utf8.RuneCountInString(password) < minPasswordLen {
 		return ErrPasswordTooShort
 	}
@@ -70,4 +77,25 @@ func hash(password string) (string, error) {
 	}
 	enc := base64.StdEncoding
 	return enc.EncodeToString(salt) + ":" + enc.EncodeToString(key), nil
+}
+
+func verify(password, encoded string) (bool, error) {
+	encodedSalt, encodedKey, found := strings.Cut(encoded, ":")
+	if !found {
+		return false, errMalformedHash
+	}
+	enc := base64.StdEncoding
+	salt, err := enc.DecodeString(encodedSalt)
+	if err != nil {
+		return false, fmt.Errorf("decode salt: %w", err)
+	}
+	want, err := enc.DecodeString(encodedKey)
+	if err != nil {
+		return false, fmt.Errorf("decode key: %w", err)
+	}
+	got, err := scrypt.Key([]byte(password), salt, scryptN, scryptR, scryptP, keyLen)
+	if err != nil {
+		return false, fmt.Errorf("derive key: %w", err)
+	}
+	return subtle.ConstantTimeCompare(got, want) == 1, nil
 }

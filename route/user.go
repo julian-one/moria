@@ -12,6 +12,17 @@ import (
 	"github.com/julian-one/moria/internal/user"
 )
 
+func Me() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if err := json.NewEncoder(w).
+			Encode(user.FromContext(r.Context())); err != nil {
+			slog.ErrorContext(r.Context(), "write current user response", "error", err)
+		}
+	}
+}
+
 func CreateUser(db *pgxpool.Pool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var request user.CreateRequest
@@ -27,17 +38,17 @@ func CreateUser(db *pgxpool.Pool) http.HandlerFunc {
 		}
 
 		u, err := user.Create(r.Context(), db, request)
-		if errors.Is(err, user.ErrUserExists) {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusConflict)
-			_, _ = fmt.Fprintf(w, `{"error": %q}`, err.Error())
-			return
-		}
 		if errors.Is(err, user.ErrInvalidUsername) ||
 			errors.Is(err, user.ErrInvalidEmail) ||
 			errors.Is(err, user.ErrInvalidPassword) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
+			_, _ = fmt.Fprintf(w, `{"error": %q}`, err.Error())
+			return
+		}
+		if errors.Is(err, user.ErrUserExists) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
 			_, _ = fmt.Fprintf(w, `{"error": %q}`, err.Error())
 			return
 		}

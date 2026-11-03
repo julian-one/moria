@@ -1,6 +1,9 @@
 package user
 
-import "time"
+import (
+	"errors"
+	"time"
+)
 
 type User struct {
 	UserID       string    `db:"user_id"       json:"user_id"`
@@ -13,6 +16,8 @@ type User struct {
 }
 
 type Role string
+
+var ErrForbidden = errors.New("forbidden: insufficient role")
 
 const (
 	RoleAdmin Role = "admin"
