@@ -4,12 +4,13 @@ import (
 	"net/http"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/rs/cors"
 
 	"github.com/julian-one/moria/internal/middleware"
 	"github.com/julian-one/moria/internal/user"
 )
 
-func Initialize(db *pgxpool.Pool) *http.ServeMux {
+func Initialize(db *pgxpool.Pool) http.Handler {
 	mux := http.NewServeMux()
 	authenticated := middleware.Authenticate(db)
 	admin := middleware.Chain(authenticated, middleware.Authorize(user.RoleAdmin))
@@ -22,5 +23,17 @@ func Initialize(db *pgxpool.Pool) *http.ServeMux {
 
 	mux.Handle("GET /me", authenticated(Me()))
 
-	return mux
+	c := cors.New(cors.Options{
+		AllowedOrigins: []string{"http://localhost:5173"},
+		AllowedMethods: []string{
+			http.MethodGet,
+			http.MethodPost,
+			http.MethodPut,
+			http.MethodDelete,
+		},
+		AllowedHeaders:   []string{"Authorization", "Content-Type"},
+		AllowCredentials: true,
+	})
+
+	return c.Handler(mux)
 }
