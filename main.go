@@ -1,11 +1,13 @@
-/*
-Copyright © 2026 NAME HERE <EMAIL ADDRESS>
-
-*/
 package main
 
-import "moria/cmd"
+import (
+	"os"
+
+	"github.com/julian-one/moria/cmd"
+)
 
 func main() {
-	cmd.Execute()
+	if err := cmd.Execute(); err != nil {
+		os.Exit(1)
+	}
 }

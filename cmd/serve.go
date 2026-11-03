@@ -1,40 +1,55 @@
-/*
-Copyright © 2026 NAME HERE <EMAIL ADDRESS>
-
-*/
 package cmd
 
 import (
 	"fmt"
+	"net/http"
+	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
+
+	"github.com/julian-one/moria/internal/database"
 )
 
-// serveCmd represents the serve command
-var serveCmd = &cobra.Command{
-	Use:   "serve",
-	Short: "A brief description of your command",
-	Long: `A longer description that spans multiple lines and likely contains examples
-and usage of using your command. For example:
+const (
+	defaultPort       = 8000
+	readHeaderTimeout = 5 * time.Second
+	readTimeout       = 10 * time.Second
+	writeTimeout      = 30 * time.Second
+	idleTimeout       = 60 * time.Second
+)
 
-Cobra is a CLI library for Go that empowers applications.
-This application is a tool to generate the needed files
-to quickly create a Cobra application.`,
-	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("serve called")
-	},
-}
+func serveCmd() *cobra.Command {
+	serve := &cobra.Command{
+		Use:   "serve",
+		Short: "Serve the moria API",
+		PreRunE: func(cmd *cobra.Command, _ []string) error {
+			return viper.BindPFlags(cmd.Flags())
+		},
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			ctx := cmd.Context()
 
-func init() {
-	rootCmd.AddCommand(serveCmd)
+			db, err := database.Open(ctx, viper.GetString("database-url"))
+			if err != nil {
+				return fmt.Errorf("open database: %w", err)
+			}
+			defer db.Close()
 
-	// Here you will define your flags and configuration settings.
-
-	// Cobra supports Persistent Flags which will work for this command
-	// and all subcommands, e.g.:
-	// serveCmd.PersistentFlags().String("foo", "", "A help for foo")
-
-	// Cobra supports local flags which will only run when this command
-	// is called directly, e.g.:
-	// serveCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
+			addr := fmt.Sprintf(":%d", viper.GetInt("port"))
+			server := &http.Server{
+				Addr:              addr,
+				ReadHeaderTimeout: readHeaderTimeout,
+				ReadTimeout:       readTimeout,
+				WriteTimeout:      writeTimeout,
+				IdleTimeout:       idleTimeout,
+			}
+			if err := server.ListenAndServe(); err != nil {
+				return fmt.Errorf("serve on %s: %w", addr, err)
+			}
+			return nil
+		},
+	}
+	serve.Flags().String("database-url", "", "PostgreSQL connection URL")
+	serve.Flags().Int("port", defaultPort, "port to listen on")
+	return serve
 }
