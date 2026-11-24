@@ -1,6 +1,6 @@
 BINARY := moria
 
-.PHONY: build format lint test dev
+.PHONY: build format lint verify test dev image
 
 build:
 	go build -o $(BINARY) .
@@ -19,3 +19,6 @@ test:
 
 dev:
 	go run . serve
+
+image:
+	@docker build -t julianone/moria .
